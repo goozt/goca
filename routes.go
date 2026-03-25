@@ -3,7 +3,7 @@ package main
 import (
 	"net/http"
 
-	"github.com/goozt/gopgbase/infra/ca/internal/ca"
+	"github.com/goozt/gopgbase/infra/ca/internal/api/ca"
 	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type caPathStore struct {
@@ -21,12 +22,13 @@ type APIError struct {
 	Code    int    `json:"code"`
 }
 
-// func RedirectHandler(targetpath string) func(w http.ResponseWriter, r *http.Request) {
-// 	return func(w http.ResponseWriter, r *http.Request) {
-// 		fmt.Println(targetpath)
-// 		http.Redirect(w, r, targetpath, http.StatusTemporaryRedirect)
-// 	}
-// }
+func GetHostUrl(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
 
 func HandleNotFound(w http.ResponseWriter, r *http.Request) {
 	WriteError(w, http.StatusNotFound, "endpoint not found")
@@ -49,39 +51,28 @@ func WriteError(w http.ResponseWriter, status int, message string) {
 }
 
 func GetCertDir(posPathArgs ...string) string {
-	if certDir.Ready {
+	// P1: Check if certDir is already set and ready
+	if certDir.Ready && certDir.Path != "" {
+		slog.Debug("using cached certDir", "path", certDir.Path)
 		return certDir.Path
 	}
 
+	// P2: Check command-line arguments
 	if len(posPathArgs) > 0 && posPathArgs[0] != "" {
-		path := posPathArgs[0]
-		if info, err := os.Stat(path); err == nil && info.IsDir() {
-			return path
-		}
+		return posPathArgs[0]
 	}
 
+	// P3: Check environment variable
 	if envDir := os.Getenv("CERTS_DIR"); envDir != "" {
-		if info, err := os.Stat(envDir); err == nil && info.IsDir() {
-			return envDir
-		}
+		return envDir
 	}
 
-	const defaultPath = "/cockroach/cockroach-certs"
-	if info, err := os.Stat(defaultPath); err == nil {
-		if !info.IsDir() {
-			slog.Error("Default path is not a directory", "path", defaultPath)
-			os.Exit(1)
-		}
-	} else if !os.IsNotExist(err) {
-		slog.Error("Failed to access default path", "error", err)
-		os.Exit(1)
-	}
-
-	return defaultPath
+	// P4: Default path
+	return "./.ca"
 }
 
 func VerifyCertDir(dir string) {
-	absPath, err := filepath.Abs(dir)
+	absPath, err := filepath.Abs(strings.TrimSpace(dir))
 	if err != nil {
 		slog.Error("invalid path", "dir", dir, "error", err)
 		os.Exit(1)
@@ -101,7 +92,7 @@ func VerifyCertDir(dir string) {
 	}
 	f, err := os.Open(absPath)
 	if err != nil {
-		slog.Error("certs directory is not readable (check permissions)", "dir", certDir, "error", err)
+		slog.Error("certs directory is not readable (check permissions)", "dir", absPath, "error", err)
 		os.Exit(1)
 	}
 	f.Close()

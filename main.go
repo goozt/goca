@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/goozt/gopgbase/infra/ca/internal/ca"
 	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 
@@ -22,6 +23,8 @@ Options:
 		API Listener Port (default "8000")
   -h, --help
 		Show this help message
+	  -genca
+		Generate CA certificate in the specified directory (default: current working directory)
 
 Arguments:
   certs_directory
@@ -33,6 +36,10 @@ Arguments:
 	}
 	port := flag.String("p", "8000", "API Listener Port")
 	help := flag.Bool("h", false, "show help")
+	gen := flag.Bool("gen", false, "generate CA")
+	force := flag.Bool("force", false, "force CA generation even if it already exists")
+	flag.BoolVar(gen, "g", false, "generate CA")
+	flag.BoolVar(force, "f", false, "force CA generation even if it already exists")
 	flag.Parse()
 
 	if *help {
@@ -51,6 +58,10 @@ Arguments:
 	slog.SetDefault(logger)
 
 	certDir := utils.GetCertDir(certsDirPath)
+	if *gen && (!ca.CheckCAExists(certDir) || *force) {
+		GenerateCA(certDir)
+		GenerateInterCA(certDir, certDir+"/ca.crt", certDir+"/ca.key")
+	}
 	utils.VerifyCertDir(certDir)
 
 	mux := http.NewServeMux()
