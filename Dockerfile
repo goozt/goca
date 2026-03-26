@@ -1,27 +1,23 @@
-FROM cockroachdb/cockroach:v26.1.1 AS builder
+FROM golang:1.25.8-alpine AS builder
 
-WORKDIR /api/
+WORKDIR /server/
+
+RUN apk --no-cache add tzdata
 
 COPY . ./
 
-RUN curl -sL https://go.dev/dl/go1.25.8.linux-amd64.tar.gz | tar -C /usr/local -xz && \
-    /usr/local/go/bin/go build -o ca-server ./...
+RUN CGO_ENABLED=0 go build -o goca .
 
-FROM cockroachdb/cockroach:v26.1.1
+FROM scratch
 
-WORKDIR /cockroach/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /server/goca /usr/bin/goca
 
-ARG CERTS_DIR=/cockroach/cockroach-certs
-ENV CERTS_DIR=$CERTS_DIR
+ARG TZ=UTC
+ENV TZ=$TZ
+ENV ZONEINFO=/usr/share/zoneinfo
 
-COPY --from=builder /api/ca-server /cockroach/ca-server
+VOLUME [ "/.rootCA" ]
 
-RUN cockroach cert create-ca \
---certs-dir="${CERTS_DIR}" \
---ca-key="${CERTS_DIR}/ca.key"
-
-RUN cockroach cert create-client root \
---certs-dir="${CERTS_DIR}" \
---ca-key="${CERTS_DIR}/ca.key"
-
-ENTRYPOINT [ "/cockroach/ca-server", "${CERTS_DIR}" ]
+EXPOSE 8000
+ENTRYPOINT [ "/usr/bin/goca", "-g", "-c" ]
