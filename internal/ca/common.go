@@ -2,7 +2,7 @@ package ca
 
 import (
 	"crypto"
-	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
@@ -66,7 +66,7 @@ func getSubjectKeyID(pub crypto.PublicKey) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	sum := sha1.Sum(spki)
+	sum := sha256.Sum256(spki)
 	return sum[:], nil
 }
 

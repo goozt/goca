@@ -5,6 +5,34 @@ import (
 	"net/http"
 )
 
+// Forwarding Response Writer
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+	bytes      int
+}
+
+func newResponseWriter(w http.ResponseWriter) *responseWriter {
+	return &responseWriter{
+		ResponseWriter: w,
+		statusCode:     http.StatusOK,
+	}
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if rw.statusCode == 0 {
+		rw.statusCode = http.StatusOK
+	}
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytes += n
+	return n, err
+}
+
 // Blocking Response Writer
 type blockingResponseWriter struct {
 	ResponseWriter http.ResponseWriter
@@ -36,32 +64,4 @@ func (b *blockingResponseWriter) Write(data []byte) (int, error) {
 		b.statusCode = http.StatusOK
 	}
 	return b.body.Write(data)
-}
-
-// Forwarding Response Writer
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-	bytes      int
-}
-
-func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	return &responseWriter{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK,
-	}
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	if rw.statusCode == 0 {
-		rw.statusCode = http.StatusOK
-	}
-	n, err := rw.ResponseWriter.Write(b)
-	rw.bytes += n
-	return n, err
 }

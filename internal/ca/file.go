@@ -6,7 +6,9 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
+	"time"
 )
 
 // PemEncode returns PEM‑encoded bytes for a certificate or private key.
@@ -64,6 +66,45 @@ func SaveCertAndKey(cert *x509.Certificate, priv crypto.Signer, certFile, keyFil
 	return WritePrivateKey(priv, keyFile)
 }
 
+// parsePrivateKeyBlock parses a PEM block into a crypto.Signer.
+func parsePrivateKeyBlock(block *pem.Block) (crypto.Signer, error) {
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "EC PRIVATE KEY":
+		return x509.ParseECPrivateKey(block.Bytes)
+	case "PRIVATE KEY":
+		k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		s, ok := k.(crypto.Signer)
+		if !ok {
+			return nil, ErrInvalidKeyPEM
+		}
+		return s, nil
+	default:
+		return nil, ErrInvalidKeyPEM
+	}
+}
+
+// verifyKeyMatchesCert returns an error if the private key's public half does
+// not match the public key embedded in the certificate.
+func verifyKeyMatchesCert(cert *x509.Certificate, key crypto.Signer, certFile string) error {
+	certPubDER, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return fmt.Errorf("failed to marshal certificate public key: %w", err)
+	}
+	keyPubDER, err := x509.MarshalPKIXPublicKey(key.Public())
+	if err != nil {
+		return fmt.Errorf("failed to marshal private key public key: %w", err)
+	}
+	if string(certPubDER) != string(keyPubDER) {
+		return fmt.Errorf("private key does not match certificate public key in %q", certFile)
+	}
+	return nil
+}
+
 func LoadCAFromFiles(certFile, keyFile string) (*x509.Certificate, crypto.Signer, error) {
 	certPEM, err := os.ReadFile(certFile)
 	if err != nil {
@@ -82,45 +123,21 @@ func LoadCAFromFiles(certFile, keyFile string) (*x509.Certificate, crypto.Signer
 	if err != nil {
 		return nil, nil, err
 	}
+	if time.Now().After(cert.NotAfter) {
+		return nil, nil, fmt.Errorf("certificate %q has expired at %s", certFile, cert.NotAfter.UTC().Format(time.RFC3339))
+	}
 
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
 		return nil, nil, ErrInvalidKeyPEM
 	}
+	key, err := parsePrivateKeyBlock(keyBlock)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	var key crypto.Signer
-
-	switch keyBlock.Type {
-	case "RSA PRIVATE KEY":
-		// PKCS#1 RSA
-		k, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
-		if err != nil {
-			return nil, nil, err
-		}
-		key = k
-
-	case "EC PRIVATE KEY":
-		// SEC1 EC
-		k, err := x509.ParseECPrivateKey(keyBlock.Bytes)
-		if err != nil {
-			return nil, nil, err
-		}
-		key = k
-
-	case "PRIVATE KEY":
-		// PKCS#8 (could be RSA or ECDSA)
-		k, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
-		if err != nil {
-			return nil, nil, err
-		}
-		s, ok := k.(crypto.Signer)
-		if !ok {
-			return nil, nil, ErrInvalidKeyPEM
-		}
-		key = s
-
-	default:
-		return nil, nil, ErrInvalidKeyPEM
+	if err := verifyKeyMatchesCert(cert, key, certFile); err != nil {
+		return nil, nil, err
 	}
 
 	return cert, key, nil

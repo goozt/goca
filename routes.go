@@ -10,6 +10,7 @@ func registerRoutes(router *http.ServeMux) {
 	caHandler := ca.NewCaHandler()
 	caRouter := caHandler.RegisterRoutes()
 
-	router.Handle("/ca/", http.StripPrefix("/ca", caRouter))
+	// Auth middleware applied to all /ca/ endpoints; /health is public.
+	router.Handle("/ca/", authMiddleware(http.StripPrefix("/ca", caRouter)))
 	router.HandleFunc("GET /health", handleHealth)
 }

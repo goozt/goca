@@ -1,16 +1,49 @@
 package ca
 
 import (
+	"crypto/x509/pkix"
 	"fmt"
+	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/goozt/gopgbase/infra/ca/internal/ca"
+	"github.com/goozt/gopgbase/infra/ca/internal/db"
 	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
+
+// certOpMu serialises concurrent certificate create/delete operations to
+// prevent TOCTOU races on the cert/key files.
+var certOpMu sync.Mutex
+
+// validateHostname rejects hostnames that could be used for path traversal.
+// Dots are allowed since hostnames like "api.example.com" are valid.
+func validateHostname(hostname string) error {
+	if strings.TrimSpace(hostname) == "" {
+		return fmt.Errorf("hostname cannot be empty")
+	}
+	if len(hostname) > 253 {
+		return fmt.Errorf("hostname too long (max 253 characters)")
+	}
+	if strings.ContainsAny(hostname, "/\\\x00") || strings.Contains(hostname, "..") {
+		return fmt.Errorf("hostname contains invalid characters")
+	}
+	return nil
+}
+
+// inCertDir verifies that target is inside base after path cleaning, to
+// prevent directory traversal even when the individual components look safe.
+func inCertDir(base, target string) bool {
+	cleanBase := filepath.Clean(base) + string(os.PathSeparator)
+	cleanTarget := filepath.Clean(target)
+	return strings.HasPrefix(cleanTarget, cleanBase) || cleanTarget == filepath.Clean(base)
+}
 
 func handleGetRootCaCert(w http.ResponseWriter, r *http.Request) {
 	caCertPath := filepath.Join(utils.GetRootCertDir(), "rootCA.crt")
@@ -22,7 +55,7 @@ func handleGetRootCaCert(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleGetInterCaCert(w http.ResponseWriter, r *http.Request) {
-	caCertPath := utils.GetCertDir() + "/ca.crt"
+	caCertPath := filepath.Join(utils.GetCertDir(), "ca.crt")
 	w.Header().Del("If-Modified-Since")
 	w.Header().Del("If-None-Match")
 	w.Header().Set("Content-Disposition", "attachment; filename=\"ca.crt\"")
@@ -32,27 +65,64 @@ func handleGetInterCaCert(w http.ResponseWriter, r *http.Request) {
 
 func handleGetCert(w http.ResponseWriter, r *http.Request) {
 	certfile := r.PathValue("certfile")
-	if !strings.HasSuffix(certfile, ".crt") {
-		utils.WriteError(w, http.StatusBadRequest, "Invalid certificate file requested")
+	// Strict allowlist: only the two public CA certs are served here.
+	// Client and node certs are intentionally not exposed via this generic endpoint.
+	allowed := map[string]bool{"ca.crt": true, "rootCA.crt": true}
+	if !allowed[certfile] {
+		utils.WriteError(w, http.StatusBadRequest, "invalid certificate file requested")
 		return
 	}
-	if !slices.Contains([]string{"ca.crt", "rootCA.crt"}, certfile) || strings.Contains(certfile, "client.") || strings.Contains(certfile, "node.") || strings.Contains(certfile, "node.") {
-		utils.WriteError(w, http.StatusBadRequest, "Invalid certificate file requested")
-		return
-	}
-	clientCertPath := utils.GetCertDir() + fmt.Sprintf("/%s", certfile)
+	certPath := filepath.Join(utils.GetCertDir(), certfile)
 	w.Header().Del("If-Modified-Since")
 	w.Header().Del("If-None-Match")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", certfile))
 	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
-	http.ServeFile(w, r, clientCertPath)
+	http.ServeFile(w, r, certPath)
+}
+
+func handleGetCRL(w http.ResponseWriter, r *http.Request) {
+	certDir := utils.GetCertDir()
+	caCert := filepath.Join(certDir, "ca.crt")
+	caKey := filepath.Join(certDir, "ca.key")
+
+	interCaCert, interCaKey, err := ca.LoadCAFromFiles(caCert, caKey)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to load CA: "+err.Error())
+		return
+	}
+
+	caDB := db.GetDB()
+	revocations := caDB.ListRevocations()
+	entries := make([]pkix.RevokedCertificate, 0, len(revocations))
+	for _, rev := range revocations {
+		serial, ok := new(big.Int).SetString(rev.SerialHex, 16)
+		if !ok {
+			continue
+		}
+		entries = append(entries, pkix.RevokedCertificate{
+			SerialNumber:   serial,
+			RevocationTime: rev.Time,
+		})
+	}
+
+	crlNum := caDB.NextCRLNumber()
+	crlBytes, err := ca.CreateCRLFromRevocations(entries, crlNum, interCaCert, interCaKey)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to generate CRL: "+err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/pkix-crl")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"ca.crl\"")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(crlBytes)
 }
 
 func handleListCaCerts(w http.ResponseWriter, r *http.Request) {
 	certDir := utils.GetCertDir()
 	files, err := os.ReadDir(certDir)
 	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, "Failed to read cert directory")
+		utils.WriteError(w, http.StatusInternalServerError, "failed to read cert directory")
 		return
 	}
 	baseURL := utils.GetHostUrl(r) + "/ca/"
@@ -62,58 +132,118 @@ func handleListCaCerts(w http.ResponseWriter, r *http.Request) {
 			certFiles = append(certFiles, baseURL+file.Name())
 		}
 	}
-
-	utils.WriteJSON(w, http.StatusOK, map[string]any{
-		"certs": certFiles,
-	})
+	utils.WriteJSON(w, http.StatusOK, map[string]any{"certs": certFiles})
 }
 
-func handleDeleteClientCert(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+func handleRevokeClientCert(w http.ResponseWriter, r *http.Request) {
+	hostname := r.PathValue("hostname")
+	if err := validateHostname(hostname); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	caDB := db.GetDB()
+	ic, ok := caDB.GetIssuedByHostname(hostname)
+	if !ok {
+		utils.WriteError(w, http.StatusNotFound, "no such client certificate")
+		return
+	}
+
+	if err := caDB.AddRevocation(ic.SerialHex, time.Now().UTC(), 0); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to record revocation")
+		return
+	}
+
 	certDir := utils.GetCertDir()
-	certFile := filepath.Join(certDir, fmt.Sprintf("client.%s.crt", id))
-	keyFile := filepath.Join(certDir, fmt.Sprintf("client.%s.key", id))
+	certFile := filepath.Join(certDir, fmt.Sprintf("client.%s.crt", hostname))
+	keyFile := filepath.Join(certDir, fmt.Sprintf("client.%s.key", hostname))
+
+	if !inCertDir(certDir, certFile) || !inCertDir(certDir, keyFile) {
+		utils.WriteError(w, http.StatusBadRequest, "invalid certificate path")
+		return
+	}
+
+	certOpMu.Lock()
+	defer certOpMu.Unlock()
 
 	os.Remove(certFile)
 	os.Remove(keyFile)
 
+	slog.Info("audit: client certificate deleted",
+		"hostname", hostname, "cert_file", certFile, "remote_addr", r.RemoteAddr)
+
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
-		"message":   "Client certificate deleted successfully",
-		"cert-file": certFile,
-		"key-file":  keyFile,
+		"message": "client certificate revoked and deleted successfully",
 	})
 }
 
-func handleDeleteNodeCert(w http.ResponseWriter, r *http.Request) {
+func handleRevokeNodeCert(w http.ResponseWriter, r *http.Request) {
 	hostname := r.PathValue("hostname")
+	if err := validateHostname(hostname); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	caDB := db.GetDB()
+	ic, ok := caDB.GetIssuedByHostname(hostname)
+	if !ok {
+		utils.WriteError(w, http.StatusNotFound, "no such node certificate")
+		return
+	}
+
+	if err := caDB.AddRevocation(ic.SerialHex, time.Now().UTC(), 0); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to record revocation")
+		return
+	}
+
 	certDir := utils.GetCertDir()
 	certFile := filepath.Join(certDir, hostname, "node.crt")
 	keyFile := filepath.Join(certDir, hostname, "node.key")
 
+	if !inCertDir(certDir, certFile) || !inCertDir(certDir, keyFile) {
+		utils.WriteError(w, http.StatusBadRequest, "invalid certificate path")
+		return
+	}
+
+	certOpMu.Lock()
+	defer certOpMu.Unlock()
+
 	os.Remove(certFile)
 	os.Remove(keyFile)
 
+	slog.Info("audit: node certificate deleted",
+		"hostname", hostname, "cert_file", certFile, "remote_addr", r.RemoteAddr)
+
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
-		"message":   "Node certificate deleted successfully",
-		"cert-file": certFile,
-		"key-file":  keyFile,
+		"message": "node certificate revoked and deleted successfully",
 	})
 }
 
-func handleCreateClientCert(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+func handleGetOrCreateClientCert(w http.ResponseWriter, r *http.Request) {
+	hostname := r.PathValue("hostname")
+	if err := validateHostname(hostname); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	certDir := utils.GetCertDir()
 	caCert := filepath.Join(certDir, "ca.crt")
 	caKey := filepath.Join(certDir, "ca.key")
-	certFile := filepath.Join(certDir, fmt.Sprintf("client.%s.crt", id))
-	keyFile := filepath.Join(certDir, fmt.Sprintf("client.%s.key", id))
+	certFile := filepath.Join(certDir, fmt.Sprintf("client.%s.crt", hostname))
+	keyFile := filepath.Join(certDir, fmt.Sprintf("client.%s.key", hostname))
+
+	if !inCertDir(certDir, certFile) || !inCertDir(certDir, keyFile) {
+		utils.WriteError(w, http.StatusBadRequest, "invalid certificate path")
+		return
+	}
+
+	certOpMu.Lock()
+	defer certOpMu.Unlock()
+
 	_, errCert := os.Stat(certFile)
 	_, errKey := os.Stat(keyFile)
-
-	fmt.Println(certDir)
-
 	if errCert == nil && errKey == nil {
-		utils.WriteError(w, http.StatusConflict, "Client certificate and key already exist")
+		utils.WriteError(w, http.StatusConflict, "client certificate and key already exist")
 		return
 	}
 
@@ -122,68 +252,99 @@ func handleCreateClientCert(w http.ResponseWriter, r *http.Request) {
 
 	key, err := ca.GenerateCAKey()
 	if err != nil {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Failed to generate key: " + err.Error(),
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "failed to generate key: "+err.Error())
 		return
 	}
 
 	interCaCert, interCaKey, err := ca.LoadCAFromFiles(caCert, caKey)
 	if err != nil {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Failed to load CA: " + err.Error(),
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "failed to load CA: "+err.Error())
 		return
 	}
 
-	subject, _ := ca.NewCertSubject(fmt.Sprintf("client.%s", id))
+	subject, _ := ca.NewCertSubject(hostname)
 	subject.Country = "IN"
 	subject.Organization = "Goozt"
 	subject.OrganizationalUnit = "Client Certificates"
 	template := ca.CreateClientCertTemplate(subject)
 	cert, err := ca.CreateClientCertificate(template, interCaCert, interCaKey, key)
 	if err != nil {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Failed to create client certificate: " + err.Error(),
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "failed to create client certificate: "+err.Error())
 		return
 	}
 
 	if err := ca.SaveCertAndKey(cert, key, certFile, keyFile); err != nil {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Failed to save cert and key: " + err.Error(),
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "failed to save cert and key: "+err.Error())
 		return
 	}
 
 	if _, err := os.Stat(certFile); os.IsNotExist(err) {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Command succeeded but certificate file was not found",
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "certificate file was not found after creation")
 		return
 	}
 
+	caDB := db.GetDB()
+	if err := caDB.SaveIssuedCert(cert, hostname); err != nil {
+		slog.Error("failed to save issued client cert", "err", err, "hostname", hostname)
+	}
+
+	slog.Info("audit: client certificate created",
+		"hostname", hostname, "cert_file", certFile, "remote_addr", r.RemoteAddr)
+
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
-		"message":   "Client certificate generated successfully",
+		"message":   "client certificate generated successfully",
 		"cert-file": certFile,
 		"key-file":  keyFile,
 	})
 }
 
-func handleCreateNodeCert(w http.ResponseWriter, r *http.Request) {
+func handleGetOrCreateNodeCert(w http.ResponseWriter, r *http.Request) {
+	caDB := db.GetDB()
+
 	hostname := r.PathValue("hostname")
+	if err := validateHostname(hostname); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	_, ok := caDB.GetIssuedByHostname(hostname)
+	if ok {
+		certDir := utils.GetCertDir()
+		certFile := filepath.Join(certDir, hostname, "node.crt")
+		keyFile := filepath.Join(certDir, hostname, "node.key")
+		if !inCertDir(certDir, certFile) || !inCertDir(certDir, keyFile) {
+			utils.WriteError(w, http.StatusInternalServerError, "invalid certificate path in database")
+			return
+		}
+		if _, err := os.Stat(certFile); os.IsNotExist(err) {
+			utils.WriteError(w, http.StatusInternalServerError, "certificate file was not found for issued cert")
+			return
+		}
+		utils.WriteJSON(w, http.StatusOK, map[string]string{
+			"message":   "node certificate already exists",
+			"cert-file": certFile,
+			"key-file":  keyFile,
+		})
+		return
+	}
 	certDir := utils.GetCertDir()
 	caCert := filepath.Join(certDir, "ca.crt")
 	caKey := filepath.Join(certDir, "ca.key")
 	certFile := filepath.Join(certDir, hostname, "node.crt")
 	keyFile := filepath.Join(certDir, hostname, "node.key")
+
+	if !inCertDir(certDir, certFile) || !inCertDir(certDir, keyFile) {
+		utils.WriteError(w, http.StatusBadRequest, "invalid certificate path")
+		return
+	}
+
+	certOpMu.Lock()
+	defer certOpMu.Unlock()
+
 	_, errCert := os.Stat(certFile)
 	_, errKey := os.Stat(keyFile)
-
-	fmt.Println(certDir)
-
 	if errCert == nil && errKey == nil {
-		utils.WriteError(w, http.StatusConflict, "Node certificate and key already exist")
+		utils.WriteError(w, http.StatusConflict, "node certificate and key already exist")
 		return
 	}
 
@@ -192,17 +353,13 @@ func handleCreateNodeCert(w http.ResponseWriter, r *http.Request) {
 
 	key, err := ca.GenerateCAKey()
 	if err != nil {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Failed to generate key: " + err.Error(),
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "failed to generate key: "+err.Error())
 		return
 	}
 
 	interCaCert, interCaKey, err := ca.LoadCAFromFiles(caCert, caKey)
 	if err != nil {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Failed to load CA: " + err.Error(),
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "failed to load CA: "+err.Error())
 		return
 	}
 
@@ -213,30 +370,64 @@ func handleCreateNodeCert(w http.ResponseWriter, r *http.Request) {
 	template := ca.CreateServerCertTemplate(subject)
 	cert, err := ca.CreateServerCertificate(template, interCaCert, interCaKey, key)
 	if err != nil {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Failed to create node certificate: " + err.Error(),
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "failed to create node certificate: "+err.Error())
 		return
 	}
 
-	os.MkdirAll(filepath.Join(certDir, hostname), 0744)
 	if err := ca.SaveCertAndKey(cert, key, certFile, keyFile); err != nil {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Failed to save cert and key: " + err.Error(),
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "failed to save cert and key: "+err.Error())
 		return
 	}
 
 	if _, err := os.Stat(certFile); os.IsNotExist(err) {
-		utils.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Command succeeded but certificate file was not found",
-		})
+		utils.WriteError(w, http.StatusInternalServerError, "certificate file was not found after creation")
 		return
 	}
 
-	utils.WriteJSON(w, http.StatusOK, map[string]string{
-		"message":   "Node certificate generated successfully",
-		"cert-file": certFile,
-		"key-file":  keyFile,
-	})
+	if err := caDB.SaveIssuedCert(cert, hostname); err != nil {
+		slog.Error("failed to save issued cert", "err", err, "hostname", hostname)
+	}
+
+	slog.Info("audit: node certificate created",
+		"hostname", hostname, "cert_file", certFile, "remote_addr", r.RemoteAddr)
+
+	pemCert := ca.PemEncodeCertificate(cert)
+	pemKey, err := ca.PemEncodePrivateKey(key)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to encode private key: "+err.Error())
+		return
+	}
+
+	interCaPEM, err := os.ReadFile(caCert)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to read intermediate CA cert: "+err.Error())
+		return
+	}
+	rootCAPEM, err := os.ReadFile(filepath.Join(utils.GetRootCertDir(), "rootCA.crt"))
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to read root CA cert: "+err.Error())
+		return
+	}
+
+	data := []utils.ZipFileData{
+		{Filename: "node.crt", Data: pemCert},
+		{Filename: "node.key", Data: pemKey},
+		{Filename: "ca.crt", Data: interCaPEM},
+		{Filename: "rootCA.crt", Data: rootCAPEM},
+	}
+	zipBin, err := utils.ZipData(data, "ca.zip")
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to create zip archive: "+err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Del("If-Modified-Since")
+	w.Header().Del("If-None-Match")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"ca.zip\"")
+	w.Header().Set("Content-Length", strconv.Itoa(len(zipBin)))
+	if _, err := w.Write(zipBin); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to write zip archive: "+err.Error())
+		return
+	}
 }

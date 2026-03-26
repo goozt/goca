@@ -73,3 +73,47 @@ func SignCRL(revokedCerts []*x509.Certificate, crlupdate CRLUpdate, parent *x509
 	}
 	return crlBytes, nil
 }
+
+// CreateCRLFromRevocations creates a signed CRL from pre-built pkix.RevokedCertificate
+// entries (e.g. sourced from the DB by serial hex). crlNumber should be
+// monotonically increasing; entries may be empty for a freshly-deployed CA.
+// The CRL is valid for 7 days from the current time.
+func CreateCRLFromRevocations(entries []pkix.RevokedCertificate, crlNumber uint64, issuer *x509.Certificate, priv crypto.Signer) ([]byte, error) {
+	now := time.Now().UTC()
+	rl := &x509.RevocationList{
+		SignatureAlgorithm:  issuer.SignatureAlgorithm,
+		RevokedCertificates: entries,
+		Number:              new(big.Int).SetUint64(crlNumber),
+		ThisUpdate:          now,
+		NextUpdate:          now.Add(7 * 24 * time.Hour),
+	}
+	return x509.CreateRevocationList(rand.Reader, rl, issuer, priv)
+}
+
+// CreateCRL creates a signed CRL from the provided revocation list.  Unlike
+// SignCRL, it accepts an empty revocation list, which is the normal state for a
+// freshly-deployed CA.  The CRL is valid for 7 days from the current time.
+func CreateCRL(revokedCerts []*x509.Certificate, issuer *x509.Certificate, priv crypto.Signer) ([]byte, error) {
+	now := time.Now().UTC()
+	entries := make([]pkix.RevokedCertificate, 0, len(revokedCerts))
+	for _, c := range revokedCerts {
+		entries = append(entries, pkix.RevokedCertificate{
+			SerialNumber:   c.SerialNumber,
+			RevocationTime: now,
+		})
+	}
+
+	number, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 64))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate CRL number: %w", err)
+	}
+
+	rl := &x509.RevocationList{
+		SignatureAlgorithm:  issuer.SignatureAlgorithm,
+		RevokedCertificates: entries,
+		Number:              number,
+		ThisUpdate:          now,
+		NextUpdate:          now.Add(7 * 24 * time.Hour),
+	}
+	return x509.CreateRevocationList(rand.Reader, rl, issuer, priv)
+}

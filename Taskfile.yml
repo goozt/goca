@@ -1,0 +1,58 @@
+version: '3'
+
+tasks:
+  _install-ineffassign: { cmds: [ go install github.com/gordonklaus/ineffassign@latest ],  status: [ which ineffassign ] }
+  _install-misspell: {cmds: [ go install github.com/client9/misspell/cmd/misspell@latest ], status: [ which misspell ] }
+  _install-gocyclo: { cmds: [ go install github.com/fzipp/gocyclo/cmd/gocyclo@latest ], status: [ which gocyclo ] }
+  _install-govulncheck: { cmds: [ go install golang.org/x/vuln/cmd/govulncheck@latest ], status: [ which govulncheck ] }
+  _install-air: { cmds: [ go install github.com/air-verse/air@latest ], status: [ which air ] }
+
+  get-tools:
+    desc: Install linting tools
+    deps:
+      - _install-ineffassign
+      - _install-misspell
+      - _install-gocyclo
+      - _install-govulncheck
+
+  init:
+    desc: Initialize development environment
+    deps:
+      - get-tools
+      - _install-air
+
+  
+  ready:
+    desc: Check if code is ready for production
+    cmds:
+      - go vet ./...
+      - gofmt -l -s -w .
+      - ineffassign ./...
+      - misspell -w .
+      - gocyclo -over 15 .
+      - govulncheck ./...
+  
+  default:
+    desc: Run the default task
+    cmds:
+      - air -- -g -c
+
+  docker:build:
+    desc: Build the Docker image
+    cmds:
+      - docker build -t goca:latest .
+
+  docker:run:
+    desc: Run the Docker container
+    cmds:
+      - docker run --rm -p 8000:8000 -v rootCA:/.rootCA goca:latest
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test ./...
+
+  build:
+    desc: Build the Go application
+    cmds:
+      - go build -o goca .

@@ -12,15 +12,17 @@ func NewCaHandler() *CaHandler {
 
 func (h *CaHandler) RegisterRoutes() *http.ServeMux {
 	r := http.NewServeMux()
-	r.HandleFunc("GET /list", handleListCaCerts)
 	r.HandleFunc("GET /rootCa.crt", handleGetRootCaCert)
 	r.HandleFunc("GET /ca.crt", handleGetInterCaCert)
 	r.HandleFunc("GET /{certfile}", handleGetCert)
 
-	r.HandleFunc("POST /client/{id}", handleCreateClientCert)
-	r.HandleFunc("DELETE /client/{id}", handleDeleteClientCert)
+	r.HandleFunc("POST /client/{hostname}", handleGetOrCreateClientCert)
+	r.HandleFunc("DELETE /client/{hostname}", handleRevokeClientCert)
 
-	r.HandleFunc("POST /node/{hostname}", handleCreateNodeCert)
-	r.HandleFunc("DELETE /node/{hostname}", handleDeleteNodeCert)
+	r.HandleFunc("POST /node/{hostname}", handleGetOrCreateNodeCert)
+	r.HandleFunc("DELETE /node/{hostname}", handleRevokeNodeCert)
+
+	r.HandleFunc("GET /ca.crl", handleGetCRL)
+	r.HandleFunc("GET /certs/", handleListCaCerts)
 	return r
 }

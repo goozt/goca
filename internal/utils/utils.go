@@ -1,21 +1,29 @@
 package utils
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
+type ZipFileData struct {
+	Filename string `json:"filename"`
+	Data     []byte `json:"data"`
+}
+
 type caPathStore struct {
+	mu       sync.RWMutex
 	Path     string
 	RootPath string
 	Ready    bool
 }
 
-var certDir = caPathStore{Ready: false}
+var certDir caPathStore
 
 type APIError struct {
 	Error   string `json:"error"`
@@ -52,30 +60,35 @@ func WriteError(w http.ResponseWriter, status int, message string) {
 }
 
 func GetCertDir(posPathArgs ...string) string {
-	// P1: Check if certDir is already set and ready
+	certDir.mu.RLock()
 	if certDir.Ready && certDir.Path != "" {
-		slog.Debug("using cached certDir", "path", certDir.Path)
-		return certDir.Path
+		path := certDir.Path
+		certDir.mu.RUnlock()
+		slog.Debug("using cached certDir", "path", path)
+		return path
 	}
+	certDir.mu.RUnlock()
 
-	// P2: Check command-line arguments
 	if len(posPathArgs) > 0 && posPathArgs[0] != "" {
 		return posPathArgs[0]
 	}
 
-	// P3: Check environment variable
 	if envDir := os.Getenv("CERTS_DIR"); envDir != "" {
 		return envDir
 	}
 
-	// P4: Default path
 	return "./.ca"
 }
 
 func GetRootCertDir() string {
+	certDir.mu.RLock()
 	if certDir.Ready && certDir.RootPath != "" {
-		return certDir.RootPath
+		path := certDir.RootPath
+		certDir.mu.RUnlock()
+		return path
 	}
+	certDir.mu.RUnlock()
+
 	absPath, _ := filepath.Abs(".rootCA")
 	return absPath
 }
@@ -106,8 +119,6 @@ func VerifyCertDir(rootDir, dir string) {
 	}
 	f.Close()
 
-	certDir.Path = absPath
-
 	absRootDir, err := filepath.Abs(rootDir)
 	if err != nil {
 		slog.Error("invalid root directory path", "dir", rootDir, "error", err)
@@ -132,6 +143,32 @@ func VerifyCertDir(rootDir, dir string) {
 		os.Exit(1)
 	}
 	f.Close()
+
+	certDir.mu.Lock()
+	certDir.Path = absPath
 	certDir.RootPath = absRootDir
 	certDir.Ready = true
+	certDir.mu.Unlock()
+}
+
+func ZipData(fileData []ZipFileData, filename string) ([]byte, error) {
+	var buf strings.Builder
+	zipWriter := zip.NewWriter(&buf)
+
+	for _, file := range fileData {
+		writer, err := zipWriter.Create(file.Filename)
+		if err != nil {
+			return nil, err
+		}
+		_, err = writer.Write(file.Data)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		return nil, err
+	}
+
+	return []byte(buf.String()), nil
 }
