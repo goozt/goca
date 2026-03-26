@@ -3,8 +3,10 @@ package main
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/goozt/gopgbase/infra/ca/internal/ca"
+	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 
 func GenerateCA(certDir string) {
@@ -25,23 +27,24 @@ func GenerateCA(certDir string) {
 		return
 	}
 
+	certDir = utils.GetRootCertDir()
 	err = os.MkdirAll(certDir, 0755)
 	if err != nil {
 		slog.Error("failed to create certificate directory", "path", certDir, "error", err)
 		return
 	}
 
-	err = ca.SaveCertAndKey(cert, key, certDir+"/ca.crt", certDir+"/ca.key")
+	err = ca.SaveCertAndKey(cert, key, certDir+"/rootCA.crt", certDir+"/rootCA.key")
 	if err != nil {
 		slog.Error("failed to generate CA certificate", "error", err)
-		os.Remove(certDir + "/ca.crt")
-		os.Remove(certDir + "/ca.key")
+		os.Remove(certDir + "/rootCA.crt")
+		os.Remove(certDir + "/rootCA.key")
 		return
 	}
-	slog.Info("CA certificate and key generated successfully", "certPath", certDir+"/ca.crt", "keyPath", certDir+"/ca.key")
+	slog.Info("CA certificate and key generated successfully", "certPath", certDir+"/rootCA.crt", "keyPath", certDir+"/rootCA.key")
 }
 
-func GenerateInterCA(certDir string, caCertPath string, caKeyPath string) {
+func GenerateInterCA(certDir string) {
 	subject, err := ca.NewCertSubject("Intermediate CA")
 	if err != nil {
 		slog.Error("failed to create Intermediate CA subject", "error", err)
@@ -52,7 +55,10 @@ func GenerateInterCA(certDir string, caCertPath string, caKeyPath string) {
 		slog.Error("failed to generate Intermediate CA private key", "error", err)
 		return
 	}
-	caCert, caKey, err := ca.LoadCAFromFiles(caCertPath, caKeyPath)
+	rootCaDir := utils.GetRootCertDir()
+	rootCaCertPath := filepath.Join(rootCaDir, "rootCA.crt")
+	rootCaKeyPath := filepath.Join(rootCaDir, "rootCA.key")
+	caCert, caKey, err := ca.LoadCAFromFiles(rootCaCertPath, rootCaKeyPath)
 	if err != nil {
 		slog.Error("failed to load Root CA certificate and key", "error", err)
 		return
@@ -69,12 +75,52 @@ func GenerateInterCA(certDir string, caCertPath string, caKeyPath string) {
 		slog.Error("failed to create certificate directory", "path", certDir, "error", err)
 		return
 	}
-	err = ca.SaveCertAndKey(cert, key, certDir+"/interca.crt", certDir+"/interca.key")
+	interCaCertPath := filepath.Join(certDir, "ca.crt")
+	interCaKeyPath := filepath.Join(certDir, "ca.key")
+	err = ca.SaveCertAndKey(cert, key, interCaCertPath, interCaKeyPath)
 	if err != nil {
 		slog.Error("failed to generate Intermediate CA certificate", "error", err)
-		os.Remove(certDir + "/interca.crt")
-		os.Remove(certDir + "/interca.key")
+		os.Remove(interCaCertPath)
+		os.Remove(interCaKeyPath)
 		return
 	}
-	slog.Info("Intermediate CA certificate and key generated successfully", "certPath", certDir+"/interca.crt", "keyPath", certDir+"/interca.key")
+	slog.Info("Intermediate CA certificate and key generated successfully", "certPath", interCaCertPath, "keyPath", interCaKeyPath)
+}
+
+func GenerateClientRootCert(certDir string, caCertPath string, caKeyPath string) {
+	subject, err := ca.NewCertSubject("Root Client")
+	if err != nil {
+		slog.Error("failed to create client certificate subject", "error", err)
+		return
+	}
+	key, err := ca.GenerateECDSAKey()
+	if err != nil {
+		slog.Error("failed to generate client private key", "error", err)
+		return
+	}
+	caCert, caKey, err := ca.LoadCAFromFiles(caCertPath, caKeyPath)
+	if err != nil {
+		slog.Error("failed to load Root CA certificate and key", "error", err)
+		return
+	}
+	template := ca.CreateClientCertTemplate(subject)
+	cert, err := ca.CreateClientCertificate(template, caCert, caKey, key)
+	if err != nil {
+		slog.Error("failed to create client certificate", "error", err)
+		return
+	}
+
+	err = os.MkdirAll(certDir, 0755)
+	if err != nil {
+		slog.Error("failed to create certificate directory", "path", certDir, "error", err)
+		return
+	}
+	err = ca.SaveCertAndKey(cert, key, certDir+"/client.root.crt", certDir+"/client.root.key")
+	if err != nil {
+		slog.Error("failed to generate client certificate", "error", err)
+		os.Remove(certDir + "/client.root.crt")
+		os.Remove(certDir + "/client.root.key")
+		return
+	}
+	slog.Info("Client certificate and key generated successfully", "certPath", certDir+"/client.root.crt", "keyPath", certDir+"/client.root.key")
 }

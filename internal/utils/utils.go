@@ -10,11 +10,12 @@ import (
 )
 
 type caPathStore struct {
-	Path  string
-	Ready bool
+	Path     string
+	RootPath string
+	Ready    bool
 }
 
-var certDir = caPathStore{Path: "", Ready: false}
+var certDir = caPathStore{Ready: false}
 
 type APIError struct {
 	Error   string `json:"error"`
@@ -71,7 +72,15 @@ func GetCertDir(posPathArgs ...string) string {
 	return "./.ca"
 }
 
-func VerifyCertDir(dir string) {
+func GetRootCertDir() string {
+	if certDir.Ready && certDir.RootPath != "" {
+		return certDir.RootPath
+	}
+	absPath, _ := filepath.Abs(".rootCA")
+	return absPath
+}
+
+func VerifyCertDir(rootDir, dir string) {
 	absPath, err := filepath.Abs(strings.TrimSpace(dir))
 	if err != nil {
 		slog.Error("invalid path", "dir", dir, "error", err)
@@ -98,5 +107,31 @@ func VerifyCertDir(dir string) {
 	f.Close()
 
 	certDir.Path = absPath
+
+	absRootDir, err := filepath.Abs(rootDir)
+	if err != nil {
+		slog.Error("invalid root directory path", "dir", rootDir, "error", err)
+		os.Exit(1)
+	}
+	info, err = os.Stat(absRootDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Error("certs directory does not exist", "dir", absRootDir)
+		} else {
+			slog.Error("failed to access certs directory", "dir", absRootDir, "error", err)
+		}
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		slog.Error("path is not a directory", "dir", absRootDir)
+		os.Exit(1)
+	}
+	f, err = os.Open(absRootDir)
+	if err != nil {
+		slog.Error("certs directory is not readable (check permissions)", "dir", absRootDir, "error", err)
+		os.Exit(1)
+	}
+	f.Close()
+	certDir.RootPath = absRootDir
 	certDir.Ready = true
 }

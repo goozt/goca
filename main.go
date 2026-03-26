@@ -23,8 +23,12 @@ Options:
 		API Listener Port (default "8000")
   -h, --help
 		Show this help message
-	  -genca
+  -g, --gen
 		Generate CA certificate in the specified directory (default: current working directory)
+  -f, --force
+		Force CA generation even if it already exists (use with -g)
+  -c, --client
+		Generate root client certificate signed by the CA (default: false, use with -g)
 
 Arguments:
   certs_directory
@@ -38,8 +42,12 @@ Arguments:
 	help := flag.Bool("h", false, "show help")
 	gen := flag.Bool("gen", false, "generate CA")
 	force := flag.Bool("force", false, "force CA generation even if it already exists")
+	client := flag.Bool("client", false, "generate root client certificate signed by the CA")
+	rootCaDir := flag.String("root", ".rootCA", "root CA certificate directory (default: .rootCA)")
 	flag.BoolVar(gen, "g", false, "generate CA")
 	flag.BoolVar(force, "f", false, "force CA generation even if it already exists")
+	flag.BoolVar(client, "c", false, "generate root client certificate signed by the CA")
+	flag.StringVar(rootCaDir, "r", ".rootCA", "root CA certificate directory (default: .rootCA)")
 	flag.Parse()
 
 	if *help {
@@ -58,19 +66,26 @@ Arguments:
 	slog.SetDefault(logger)
 
 	certDir := utils.GetCertDir(certsDirPath)
-	if *gen && (!ca.CheckCAExists(certDir) || *force) {
-		GenerateCA(certDir)
-		GenerateInterCA(certDir, certDir+"/ca.crt", certDir+"/ca.key")
+	if *gen {
+		if !ca.CheckRootCAExists(certDir) || *force {
+			GenerateCA(certDir)
+		}
+		if !ca.CheckCAExists(certDir) || *force {
+			GenerateInterCA(certDir)
+		}
 	}
-	utils.VerifyCertDir(certDir)
+
+	if *client && (!ca.CheckClientRootCertExists(certDir) || *force) {
+		GenerateClientRootCert(certDir, certDir+"/ca.crt", certDir+"/ca.key")
+	}
+
+	utils.VerifyCertDir(*rootCaDir, certDir)
 
 	mux := http.NewServeMux()
 	registerRoutes(mux)
 
 	handler := recoveryMiddleware(
-		loggingMiddleware(
-			mux,
-		),
+		loggingMiddleware(notFoundErrorMiddleware(mux)),
 	)
 
 	server := &http.Server{
@@ -82,7 +97,6 @@ Arguments:
 	}
 
 	go func() {
-		// logger.Info("server starting", "addr", server.Addr)
 		fmt.Printf("Starting API Server\nAPI Listener: 0.0.0.0%s\n", server.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed to start", "error", err)

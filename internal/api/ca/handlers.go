@@ -12,20 +12,20 @@ import (
 	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 
-func handleGetCaCert(w http.ResponseWriter, r *http.Request) {
-	caCertPath := utils.GetCertDir() + "/ca.crt"
+func handleGetRootCaCert(w http.ResponseWriter, r *http.Request) {
+	caCertPath := filepath.Join(utils.GetRootCertDir(), "rootCA.crt")
 	w.Header().Del("If-Modified-Since")
 	w.Header().Del("If-None-Match")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"ca.crt\"")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"rootCA.crt\"")
 	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
 	http.ServeFile(w, r, caCertPath)
 }
 
 func handleGetInterCaCert(w http.ResponseWriter, r *http.Request) {
-	caCertPath := utils.GetCertDir() + "/interca.crt"
+	caCertPath := utils.GetCertDir() + "/ca.crt"
 	w.Header().Del("If-Modified-Since")
 	w.Header().Del("If-None-Match")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"interca.crt\"")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"ca.crt\"")
 	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
 	http.ServeFile(w, r, caCertPath)
 }
@@ -36,7 +36,7 @@ func handleGetCert(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid certificate file requested")
 		return
 	}
-	if !slices.Contains([]string{"ca.crt", "interca.crt"}, certfile) || strings.Contains(certfile, "client.") || strings.Contains(certfile, "node.") || strings.Contains(certfile, "node.") {
+	if !slices.Contains([]string{"ca.crt", "rootCA.crt"}, certfile) || strings.Contains(certfile, "client.") || strings.Contains(certfile, "node.") || strings.Contains(certfile, "node.") {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid certificate file requested")
 		return
 	}
@@ -103,8 +103,8 @@ func handleDeleteNodeCert(w http.ResponseWriter, r *http.Request) {
 func handleCreateClientCert(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	certDir := utils.GetCertDir()
-	caCert := filepath.Join(certDir, "interca.crt")
-	caKey := filepath.Join(certDir, "interca.key")
+	caCert := filepath.Join(certDir, "ca.crt")
+	caKey := filepath.Join(certDir, "ca.key")
 	certFile := filepath.Join(certDir, fmt.Sprintf("client.%s.crt", id))
 	keyFile := filepath.Join(certDir, fmt.Sprintf("client.%s.key", id))
 	_, errCert := os.Stat(certFile)
@@ -173,8 +173,8 @@ func handleCreateClientCert(w http.ResponseWriter, r *http.Request) {
 func handleCreateNodeCert(w http.ResponseWriter, r *http.Request) {
 	hostname := r.PathValue("hostname")
 	certDir := utils.GetCertDir()
-	caCert := filepath.Join(certDir, "interca.crt")
-	caKey := filepath.Join(certDir, "interca.key")
+	caCert := filepath.Join(certDir, "ca.crt")
+	caKey := filepath.Join(certDir, "ca.key")
 	certFile := filepath.Join(certDir, hostname, "node.crt")
 	keyFile := filepath.Join(certDir, hostname, "node.key")
 	_, errCert := os.Stat(certFile)

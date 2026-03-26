@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/goozt/gopgbase/infra/ca/internal/api/ca"
-	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 
 func registerRoutes(router *http.ServeMux) {
@@ -13,5 +12,4 @@ func registerRoutes(router *http.ServeMux) {
 
 	router.Handle("/ca/", http.StripPrefix("/ca", caRouter))
 	router.HandleFunc("GET /health", handleHealth)
-	router.HandleFunc("/", utils.HandleNotFound)
 }

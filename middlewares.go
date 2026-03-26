@@ -5,22 +5,38 @@ import (
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
+func notFoundErrorMiddleware(next *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := newBlockingResponseWriter(w)
+		next.ServeHTTP(buf, r)
 
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
+		if buf.statusCode == 0 {
+			buf.statusCode = http.StatusOK
+		}
+
+		if buf.statusCode == http.StatusNotFound {
+			utils.WriteError(w, http.StatusNotFound, "endpoint not found")
+			return
+		}
+
+		for key, values := range buf.headers {
+			for _, v := range values {
+				w.Header().Add(key, v)
+			}
+		}
+		w.WriteHeader(buf.statusCode)
+		_, _ = w.Write(buf.body.Bytes())
+	})
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		wrapped := newResponseWriter(w)
 		next.ServeHTTP(wrapped, r)
 		slog.Info("http request",
 			"method", r.Method,
@@ -45,7 +61,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 				http.Error(w, `{"error": "internal server error"}`, http.StatusInternalServerError)
 			}
 		}()
-		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		wrapped := newResponseWriter(w)
 		next.ServeHTTP(wrapped, r)
 	})
 }
