@@ -42,7 +42,7 @@ func Open(path string) (*DB, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return d, nil // new empty DB
+			return d, nil
 		}
 		return nil, err
 	}

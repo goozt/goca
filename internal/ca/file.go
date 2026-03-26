@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -103,6 +104,37 @@ func verifyKeyMatchesCert(cert *x509.Certificate, key crypto.Signer, certFile st
 		return fmt.Errorf("private key does not match certificate public key in %q", certFile)
 	}
 	return nil
+}
+
+func LoadCertificateBundle(certFiles ...string) ([]byte, error) {
+	if len(certFiles) == 0 {
+		return nil, fmt.Errorf("no certificate files provided")
+	}
+	var bundle []byte
+	for _, f := range certFiles {
+		if !strings.HasSuffix(f, ".crt") && !strings.HasSuffix(f, ".pem") {
+			return nil, fmt.Errorf("file %q is not a certificate file", f)
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, fmt.Errorf("read %q: %w", f, err)
+		}
+		for {
+			var block *pem.Block
+			block, data = pem.Decode(data)
+			if block == nil {
+				break
+			}
+			if block.Type != "CERTIFICATE" {
+				continue
+			}
+			bundle = append(bundle, pem.EncodeToMemory(block)...)
+		}
+	}
+	if len(bundle) == 0 {
+		return nil, fmt.Errorf("no certificates found in files: %v", certFiles)
+	}
+	return bundle, nil
 }
 
 func LoadCAFromFiles(certFile, keyFile string) (*x509.Certificate, crypto.Signer, error) {

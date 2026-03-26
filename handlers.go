@@ -38,9 +38,6 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	if caCert, _, err := ca.LoadCAFromFiles(caCertPath, caKeyPath); err != nil {
 		checks["ca_cert"] = "fail: " + err.Error()
 		healthy = false
-	} else if time.Now().After(caCert.NotAfter) {
-		checks["ca_cert"] = "fail: intermediate CA certificate has expired"
-		healthy = false
 	} else {
 		checks["ca_cert"] = "ok (expires " + caCert.NotAfter.UTC().Format(time.RFC3339) + ")"
 	}

@@ -49,6 +49,36 @@ func (d *DB) ListRevocations() []Revocation {
 	return out
 }
 
+func (d *DB) ListIssued() []IssuedCert {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make([]IssuedCert, 0, len(d.s.Issued))
+	for _, ic := range d.s.Issued {
+		out = append(out, ic)
+	}
+	return out
+}
+
+func (d *DB) IsRevoked(serialHex string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, revoked := d.s.Revoked[serialHex]
+	return revoked
+}
+
+func (d *DB) IsIssued(hostname string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, issued := d.s.Issued[hostname]
+	return issued
+}
+
+func (d *DB) GetCRLNumber() uint64 {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.s.NextCRLNum
+}
+
 func (d *DB) NextCRLNumber() uint64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()

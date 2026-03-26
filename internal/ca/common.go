@@ -10,8 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 
 type CertTemplate func(subjectKeyID []byte, authorityKeyID ...[]byte) *x509.Certificate
@@ -71,7 +69,6 @@ func getSubjectKeyID(pub crypto.PublicKey) ([]byte, error) {
 }
 
 func CheckRootCAExists(dir string) bool {
-	dir = utils.GetRootCertDir()
 	rootCACertPath := filepath.Join(dir, "rootCA.crt")
 	if _, err := os.Stat(rootCACertPath); os.IsNotExist(err) {
 		slog.Info("Root CA certificate does not exist", "path", rootCACertPath)

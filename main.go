@@ -139,7 +139,7 @@ func main() {
 		loggingMiddleware(
 			securityHeadersMiddleware(
 				rateLimitMiddleware(
-					notFoundErrorMiddleware(mux),
+					errorHandlingMiddleware(mux),
 				),
 			),
 		),

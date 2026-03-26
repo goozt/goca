@@ -1,4 +1,4 @@
-package ca
+package api
 
 import (
 	"net/http"
@@ -12,6 +12,7 @@ func NewCaHandler() *CaHandler {
 
 func (h *CaHandler) RegisterRoutes() *http.ServeMux {
 	r := http.NewServeMux()
+	r.HandleFunc("GET /ca-bundle.crt", handleCaBundleCerts)
 	r.HandleFunc("GET /rootCa.crt", handleGetRootCaCert)
 	r.HandleFunc("GET /ca.crt", handleGetInterCaCert)
 	r.HandleFunc("GET /{certfile}", handleGetCert)
@@ -23,6 +24,7 @@ func (h *CaHandler) RegisterRoutes() *http.ServeMux {
 	r.HandleFunc("DELETE /node/{hostname}", handleRevokeNodeCert)
 
 	r.HandleFunc("GET /ca.crl", handleGetCRL)
-	r.HandleFunc("GET /certs/", handleListCaCerts)
+	r.HandleFunc("GET /certs", handleListCaCerts)
+	// r.HandleFunc("GET /crl/db", db.HandlerListRevocations)
 	return r
 }

@@ -6,13 +6,14 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 
-func notFoundErrorMiddleware(next *http.ServeMux) http.Handler {
+func errorHandlingMiddleware(next *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := newBlockingResponseWriter(w)
 		next.ServeHTTP(buf, r)
@@ -21,9 +22,16 @@ func notFoundErrorMiddleware(next *http.ServeMux) http.Handler {
 			buf.statusCode = http.StatusOK
 		}
 
-		if buf.statusCode == http.StatusNotFound {
-			utils.WriteError(w, http.StatusNotFound, "endpoint not found")
-			return
+		if buf.statusCode >= 400 {
+			ct := buf.headers.Get("Content-Type")
+			if !strings.HasPrefix(ct, "application/json") {
+				msg := strings.ToLower(http.StatusText(buf.statusCode))
+				if msg == "" {
+					msg = "unexpected error"
+				}
+				utils.WriteError(w, buf.statusCode, msg)
+				return
+			}
 		}
 
 		for key, values := range buf.headers {

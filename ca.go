@@ -27,7 +27,6 @@ func GenerateCA(certDir string) {
 		return
 	}
 
-	certDir = utils.GetRootCertDir()
 	err = os.MkdirAll(certDir, 0755)
 	if err != nil {
 		slog.Error("failed to create certificate directory", "path", certDir, "error", err)

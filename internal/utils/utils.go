@@ -2,6 +2,7 @@ package utils
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -152,7 +153,7 @@ func VerifyCertDir(rootDir, dir string) {
 }
 
 func ZipData(fileData []ZipFileData, filename string) ([]byte, error) {
-	var buf strings.Builder
+	var buf bytes.Buffer
 	zipWriter := zip.NewWriter(&buf)
 
 	for _, file := range fileData {
@@ -170,5 +171,30 @@ func ZipData(fileData []ZipFileData, filename string) ([]byte, error) {
 		return nil, err
 	}
 
-	return []byte(buf.String()), nil
+	return buf.Bytes(), nil
+}
+
+func DirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+func FileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+func FilesExist(paths ...string) bool {
+	for _, path := range paths {
+		if !FileExists(path) {
+			return false
+		}
+	}
+	return true
 }
