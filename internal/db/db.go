@@ -18,12 +18,13 @@ type DB struct {
 
 var caDB *DB
 
-func init() {
+func InitDB() *DB {
 	var err error
 	caDB, err = Open(filepath.Join(utils.GetRootCertDir(), "ca.db"))
 	if err != nil {
 		log.Fatal(err)
 	}
+	return caDB
 }
 
 func GetDB() *DB {

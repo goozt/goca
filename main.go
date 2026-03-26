@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goozt/gopgbase/infra/ca/internal/ca"
+	"github.com/goozt/gopgbase/infra/ca/internal/db"
 	"github.com/goozt/gopgbase/infra/ca/internal/utils"
 )
 
@@ -24,6 +25,14 @@ type ArgOptions struct {
 	RootCA  *string
 	TLSCert *string
 	TLSKey  *string
+}
+
+func init() {
+	caDB := db.InitDB()
+	if caDB == nil {
+		slog.Error("failed to initialize database")
+		os.Exit(1)
+	}
 }
 
 func parseArgs() ArgOptions {
@@ -86,8 +95,8 @@ func initLogger() {
 
 func generateCerts(opts ArgOptions, certDir string) {
 	if *opts.Gen {
-		if !ca.CheckRootCAExists(certDir) || *opts.Force {
-			GenerateCA(certDir)
+		if !ca.CheckRootCAExists(*opts.RootCA) || *opts.Force {
+			GenerateCA(*opts.RootCA)
 		}
 		if !ca.CheckCAExists(certDir) || *opts.Force {
 			GenerateInterCA(certDir)

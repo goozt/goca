@@ -107,13 +107,25 @@ func inCertDir(base, target string) bool {
 	}
 	targetResolved, err := filepath.EvalSymlinks(targetAbs)
 	if err != nil {
-		// Target does not exist yet; evaluate the parent directory to check
-		// containment while still resolving any symlinks in the parent path.
-		parentResolved, perr := filepath.EvalSymlinks(filepath.Dir(targetAbs))
-		if perr != nil {
+		dir, extra := filepath.Dir(targetAbs), filepath.Base(targetAbs)
+		for {
+			maybeResolved, perr := filepath.EvalSymlinks(dir)
+			if perr == nil {
+				targetResolved = filepath.Join(maybeResolved, extra)
+				break
+			}
+			if _, statErr := os.Stat(dir); statErr != nil && os.IsNotExist(statErr) {
+				parent := filepath.Dir(dir)
+				if parent == dir {
+					targetResolved = filepath.Clean(targetAbs)
+					break
+				}
+				extra = filepath.Join(filepath.Base(dir), extra)
+				dir = parent
+				continue
+			}
 			return false
 		}
-		targetResolved = filepath.Join(parentResolved, filepath.Base(targetAbs))
 	}
 
 	baseWithSep := baseResolved + string(os.PathSeparator)
@@ -479,6 +491,7 @@ func buildAndSendNodeCertZip(w http.ResponseWriter, r *http.Request, hostname st
 	certFile := filepath.Join(certDir, hostname, "node.crt")
 	keyFile := filepath.Join(certDir, hostname, "node.key")
 
+	fmt.Println(certDir, certFile, keyFile)
 	if !inCertDir(certDir, certFile) || !inCertDir(certDir, keyFile) {
 		utils.WriteError(w, http.StatusBadRequest, "invalid certificate path")
 		return
