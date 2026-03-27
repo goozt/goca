@@ -26,6 +26,7 @@ ENV TZ=$TZ
 ENV ZONEINFO=/usr/share/zoneinfo
 
 VOLUME [ "/.rootCA" ]
+VOLUME [ "/.ca" ]
 
 USER 1000
 

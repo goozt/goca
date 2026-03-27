@@ -66,6 +66,14 @@ tasks:
     cmds:
       - docker volume rm rootCA || true
 
+  dockerhub:
+    desc: Push the Docker image to Docker Hub
+    deps:
+      - docker:build
+    cmds:
+      - docker tag goca:latest nikzjon/goca:latest
+      - docker push nikzjon/goca:latest
+
   test:
     desc: Run tests
     cmds:
