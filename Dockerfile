@@ -4,8 +4,9 @@ WORKDIR /server/
 
 RUN apk --no-cache add tzdata
 
-# Create a non-root user to embed in the scratch image.
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup -u 1001 -H -D
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup -u 1000 -H -D
+
+RUN mkdir -p /.rootCA /.ca && chown 1000:1000 /.rootCA /.ca
 
 COPY . ./
 
@@ -17,15 +18,16 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/passwd /etc/passwd
 COPY --from=builder /etc/group /etc/group
 COPY --from=builder /server/goca /usr/bin/goca
+COPY --from=builder --chown=1000:1000 /.rootCA /.rootCA
+COPY --from=builder --chown=1000:1000 /.ca /.ca
 
 ARG TZ=UTC
 ENV TZ=$TZ
 ENV ZONEINFO=/usr/share/zoneinfo
 
-# Run as non-root user (uid 1001).
-USER 1001
-
 VOLUME [ "/.rootCA" ]
 
+USER 1000
+
 EXPOSE 8000
-ENTRYPOINT [ "/usr/bin/goca", "-g", "-c" ]
+ENTRYPOINT [ "/usr/bin/goca", "-g", "-c", "-root", "/.rootCA" ]

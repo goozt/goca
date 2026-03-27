@@ -45,7 +45,26 @@ tasks:
   docker:run:
     desc: Run the Docker container
     cmds:
-      - docker run --rm -p 8000:8000 -v rootCA:/.rootCA goca:latest
+      - docker run -d --rm --name goca-server -p 8000:8000 -v rootCA:/.rootCA goca:latest
+
+  docker:stop:
+    desc: Stop the Docker container
+    cmds:
+      - docker stop goca-server || true
+
+  docker:clean:
+    desc: Clean up Docker images and containers
+    deps:
+      - docker:stop
+    cmds:
+      - docker rm -f goca-server || true
+
+  docker:rmv:
+    desc: Remove volumes
+    deps:
+      - docker:stop
+    cmds:
+      - docker volume rm rootCA || true
 
   test:
     desc: Run tests
